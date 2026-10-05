@@ -7,18 +7,47 @@ jobs:
   rdp:
     name: RDP
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 55
+
+    defaults:
+      run:
+        shell: pwsh
 
     steps:
-      - name: Instalar Tailscale
-        shell: pwsh
+
+      - name: Configurar RDP
         run: |
           $ErrorActionPreference = "Stop"
 
-          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" `
+            -Value 0 `
+            -Force
+
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "UserAuthentication" `
+            -Value 1 `
+            -Force
+
+          Set-Service `
+            -Name "TermService" `
+            -StartupType Automatic
+
+          Start-Service "TermService"
+
+          Write-Host "RDP habilitado."
+
+      - name: Instalar Tailscale
+        run: |
+          $ErrorActionPreference = "Stop"
+
           $installer = "$env:TEMP\tailscale.msi"
 
-          Invoke-WebRequest -Uri $url -OutFile $installer
+          Invoke-WebRequest `
+            -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" `
+            -OutFile $installer
 
           Start-Process `
             -FilePath "msiexec.exe" `
@@ -27,28 +56,27 @@ jobs:
 
           Remove-Item $installer -Force
 
-          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
-          if (-not (Test-Path $tailscale)) {
+          if (!(Test-Path $ts)) {
             throw "Tailscale não foi instalado."
           }
 
-          Write-Host "Tailscale instalado com sucesso."
+          Write-Host "Tailscale instalado."
 
       - name: Conectar Tailscale
-        shell: pwsh
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           $ErrorActionPreference = "Stop"
 
           if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
-            throw "TAILSCALE_AUTH_KEY não está configurada."
+            throw "O secret TAILSCALE_AUTH_KEY não existe."
           }
 
-          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
-          & $tailscale up `
+          & $ts up `
             --authkey="$env:TAILSCALE_AUTH_KEY" `
             --hostname="github-rdp-$env:GITHUB_RUN_ID"
 
@@ -56,4 +84,44 @@ jobs:
             throw "Falha ao conectar ao Tailscale."
           }
 
-          Write-Host "Tailscale
+          Write-Host "Tailscale conectado."
+
+      - name: Criar usuário RDP
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Add-Type -AssemblyName System.Web
+
+          $chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%"
+
+          $password = -join (
+            1..16 | ForEach-Object {
+              $chars[(Get-Random -Maximum $chars.Length)]
+            }
+          )
+
+          $securePassword = ConvertTo-SecureString `
+            $password `
+            -AsPlainText `
+            -Force
+
+          $user = Get-LocalUser `
+            -Name "RDPUser" `
+            -ErrorAction SilentlyContinue
+
+          if ($user) {
+            Set-LocalUser `
+              -Name "RDPUser" `
+              -Password $securePassword
+          }
+          else {
+            New-LocalUser `
+              -Name "RDPUser" `
+              -Password $securePassword `
+              -PasswordNeverExpires `
+              -AccountNeverExpires
+          }
+
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+           
